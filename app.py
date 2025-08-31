@@ -6,6 +6,16 @@ from google.cloud import storage
 
 app = Flask(__name__)
 
+
+@app.get("/")
+def root():
+    return jsonify({"ok": True, "service": "yt-render-ffmpeg"}), 200
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+
 # Variables via entorno en Cloud Run:
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "")                  # p.ej. "yt-auto-videos-123"
 GCS_SIGNED_URL_TTL = int(os.environ.get("GCS_SIGNED_URL_TTL", "86400"))  # 24h
