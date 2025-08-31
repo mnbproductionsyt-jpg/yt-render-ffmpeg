@@ -1,7 +1,14 @@
 FROM python:3.11-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY app.py .
-CMD ["python","app.py"]
+
+CMD ["bash","-lc","exec gunicorn -b 0.0.0.0:${PORT:-8080} 'app:app' --workers 1 --threads 2 --timeout 3600 --log-level info"]
