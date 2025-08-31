@@ -113,3 +113,8 @@ for i, s in enumerate(scenes_in, start=1):
         return jsonify({"status":"ok","video_url":signed_url,"gcs_path":gspath,"fps":fps,"size":{"w":w,"h":h}})
     else:
         return jsonify({"error":"Configura GCS_BUCKET para URL firmada."}), 500
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
