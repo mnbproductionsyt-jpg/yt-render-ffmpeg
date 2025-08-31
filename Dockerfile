@@ -4,4 +4,4 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
-CMD ["bash","-lc","gunicorn -b 0.0.0.0:${PORT:-8080} app:app --workers 2 --threads 4 --timeout 3600"]
+CMD ["python","app.py"]
