@@ -10,6 +10,13 @@ app = Flask(__name__)
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "")                  # p.ej. "yt-auto-videos-123"
 GCS_SIGNED_URL_TTL = int(os.environ.get("GCS_SIGNED_URL_TTL", "86400"))  # 24h
 storage_client = storage.Client() if GCS_BUCKET else None
+def clean_url(u: str) -> str:
+    if u is None:
+        return ""
+    s = str(u).strip().strip('"').strip("'")
+    s = unquote(s)           # decodifica %22, %20, etc.
+    return s.replace(" ", "%20")  # espacios seguros
+
 
 def fetch_to_file(url, suffix):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -54,13 +61,16 @@ def render():
     w = int(data.get("size", {}).get("w", 1280))
     h = int(data.get("size", {}).get("h", 720))
     fps = int(data.get("fps", 24))
-    audio_url = data["audio_url"]
+    audio_url = clean_url(data["audio_url"])
     scenes_in = data["scenes"]
 
     local_imgs = []
-    for i, s in enumerate(scenes_in, start=1):
-        img_path = fetch_to_file(s["image_url"], suffix=f"_{i:02d}.jpg")
-        local_imgs.append({"local_path": img_path, "seconds": float(s["seconds"])})
+for i, s in enumerate(scenes_in, start=1):
+    img_url = clean_url(s.get("image_url", ""))
+    img_path = fetch_to_file(img_url, suffix=f"_{i:02d}.jpg")
+    secs = float(s.get("seconds", 5))  # si no viene, usa 5s
+    local_imgs.append({"local_path": img_path, "seconds": secs})
+
     audio_path = fetch_to_file(audio_url, suffix=".mp3")
 
     lst_path = build_concat_list(local_imgs)
