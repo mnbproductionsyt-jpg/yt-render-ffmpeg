@@ -4,20 +4,19 @@ import time
 import tempfile
 import subprocess
 from urllib.request import urlopen, Request
-from urllib.parse import unquote
 
 from flask import Flask, request, jsonify
 from google.cloud import storage
 
 app = Flask(__name__)
 
-# ---------------- Config ----------------
+# -------- Config --------
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "").strip()
 GCS_SIGNED_URL_TTL = int(os.environ.get("GCS_SIGNED_URL_TTL", "86400"))  # 24h
 storage_client = storage.Client() if GCS_BUCKET else None
 
 
-# ---------------- Health ----------------
+# -------- Health --------
 @app.get("/")
 def root():
     return jsonify({"ok": True, "service": "yt-render-ffmpeg"}), 200
@@ -32,15 +31,18 @@ def health_alt():
     return "ok", 200
 
 
-# ---------------- Helpers ----------------
+# -------- Helpers --------
 def clean_url(u: str) -> str:
+    """Usa la URL tal cual (solo quita comillas exteriores si vienen)."""
     if u is None:
         return ""
-    s = str(u).strip().strip('"').strip("'")
-    s = unquote(s)
-    return s.replace(" ", "%20")
+    s = str(u).strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1]
+    return s  # SIN unquote, SIN reemplazos
 
 def fetch_to_file(url: str, suffix: str) -> str:
+    """Descarga un recurso HTTP a un archivo temporal y devuelve su path."""
     req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urlopen(req) as resp:
         data = resp.read()
@@ -50,6 +52,7 @@ def fetch_to_file(url: str, suffix: str) -> str:
     return path
 
 def upload_to_gcs(local_path: str, content_type: str = "video/mp4") -> str:
+    """Sube archivo a GCS y devuelve URL firmada de descarga."""
     if not storage_client or not GCS_BUCKET:
         raise RuntimeError("GCS no configurado. Falta GCS_BUCKET.")
     key = f"renders/{time.strftime('%Y%m%d')}/{uuid.uuid4().hex}.mp4"
@@ -65,9 +68,21 @@ def upload_to_gcs(local_path: str, content_type: str = "video/mp4") -> str:
     return url
 
 
-# ---------------- Render ----------------
+# -------- Render --------
 @app.post("/render")
 def render():
+    """
+    Espera un JSON como:
+    {
+      "size": {"w": 1280, "h": 720},
+      "fps": 24,
+      "audio_url": "https://.../audio.mp3",
+      "scenes": [
+        {"image_url": "https://.../img1.jpg", "seconds": 6},
+        {"image_url": "https://.../img2.jpg", "seconds": 6}
+      ]
+    }
+    """
     try:
         data = request.get_json(force=True, silent=False)
     except Exception:
@@ -81,11 +96,11 @@ def render():
         audio_url = clean_url(data.get("audio_url", ""))
         scenes = data.get("scenes") or []
         if not scenes:
-            return jsonify({"status":"error","error":"scenes vacío"}), 400
+            return jsonify({"status": "error", "error": "scenes vacío"}), 400
         if not audio_url:
-            return jsonify({"status":"error","error":"audio_url vacío"}), 400
+            return jsonify({"status": "error", "error": "audio_url vacío"}), 400
     except Exception as e:
-        return jsonify({"status":"error","error": f"Payload inválido: {e}"}), 400
+        return jsonify({"status": "error", "error": f"Payload inválido: {e}"}), 400
 
     workdir = tempfile.mkdtemp(prefix="render_")
     seg_files, local_imgs = [], []
@@ -96,7 +111,7 @@ def render():
         # Descargar audio
         local_audio = fetch_to_file(audio_url, ".mp3")
 
-        # Generar segmentos de video
+        # Generar segmentos .mp4 por cada imagen (duración = seconds)
         for i, s in enumerate(scenes, start=1):
             img_url = clean_url(s.get("image_url", ""))
             secs = float(s.get("seconds", 5))
@@ -111,15 +126,22 @@ def render():
                 f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black"
             )
             cmd_seg = [
-                "ffmpeg","-y","-loop","1","-t",f"{secs}","-r",f"{fps}",
-                "-i",img_path,"-vf",vf,"-c:v","libx264",
-                "-pix_fmt","yuv420p","-movflags","+faststart",seg_path
+                "ffmpeg", "-y",
+                "-loop", "1",
+                "-t", f"{secs}",
+                "-r", f"{fps}",
+                "-i", img_path,
+                "-vf", vf,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                seg_path
             ]
             subprocess.check_output(cmd_seg, stderr=subprocess.STDOUT)
             seg_files.append(seg_path)
 
         if not seg_files:
-            return jsonify({"status":"error","error":"No se generaron segmentos"}), 400
+            return jsonify({"status": "error", "error": "No se generaron segmentos"}), 400
 
         # Concatenar segmentos
         list_path = os.path.join(workdir, "list.txt")
@@ -128,39 +150,56 @@ def render():
                 f.write(f"file '{s}'\n")
         concat_path = os.path.join(workdir, "concat.mp4")
         cmd_concat = [
-            "ffmpeg","-y","-f","concat","-safe","0","-i",list_path,"-c","copy",concat_path
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
+            concat_path
         ]
         subprocess.check_output(cmd_concat, stderr=subprocess.STDOUT)
 
-        # Mezclar audio
+        # Multiplexar con audio (recorta al menor con -shortest)
         cmd_mux = [
-            "ffmpeg","-y","-i",concat_path,"-i",local_audio,
-            "-c:v","copy","-c:a","aac","-b:a","192k","-shortest",out_path
+            "ffmpeg", "-y",
+            "-i", concat_path,
+            "-i", local_audio,
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            "-shortest",
+            out_path
         ]
         subprocess.check_output(cmd_mux, stderr=subprocess.STDOUT)
 
         # Subir a GCS
         video_url = upload_to_gcs(out_path)
 
-        return jsonify({"status":"ok","video_url":video_url,"meta":{"w":W,"h":H,"fps":fps,"scenes":len(seg_files)}}), 200
+        return jsonify({
+            "status": "ok",
+            "video_url": video_url,
+            "meta": {"w": W, "h": H, "fps": fps, "scenes": len(seg_files)}
+        }), 200
 
     except subprocess.CalledProcessError as e:
         err = e.output.decode("utf-8", errors="ignore") if e.output else str(e)
-        return jsonify({"status":"error","stage":"ffmpeg","stderr":err}), 500
+        return jsonify({"status": "error", "stage": "ffmpeg", "stderr": err}), 500
     except Exception as e:
-        return jsonify({"status":"error","error": str(e)}), 500
+        return jsonify({"status": "error", "error": str(e)}), 500
     finally:
+        # Limpieza best-effort
         try:
-            if local_audio and os.path.exists(local_audio): os.remove(local_audio)
+            if local_audio and os.path.exists(local_audio):
+                os.remove(local_audio)
             for p in local_imgs:
-                if os.path.exists(p): os.remove(p)
+                if os.path.exists(p):
+                    os.remove(p)
             for p in seg_files:
-                if os.path.exists(p): os.remove(p)
+                if os.path.exists(p):
+                    os.remove(p)
         except Exception:
             pass
 
 
-# ---------------- Dev ----------------
+# -------- Dev (no usado en Cloud Run) --------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
